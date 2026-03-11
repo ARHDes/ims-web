@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>線邊倉助手 V4.0 (Railway版)</title>
+    <title>線邊倉助手 V5.0 (Supabase版)</title>
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script><script>eruda.init();</script>
     <script src="https://unpkg.com/html5-qrcode"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Supabase 官方套件 -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         body { -webkit-tap-highlight-color: transparent; }
         .tab-active { border-bottom: 3px solid #2563eb; color: #2563eb; font-weight: 800; }
@@ -38,7 +40,7 @@
         <div class="flex items-center gap-2">
             <div class="flex flex-col text-left">
                 <span id="admin-badge" class="hidden text-[8px] font-black bg-amber-500 text-white px-1.5 py-0.5 rounded-full w-fit mb-0.5 uppercase shadow-sm">管理模式</span>
-                <span class="text-[10px] font-black text-slate-400 uppercase tracking-tighter">線邊倉助手 V4.0 (鐵道版)</span>
+                <span class="text-[10px] font-black text-slate-400 uppercase tracking-tighter">線邊倉助手 V5.0</span>
                 <span id="display-operator" class="text-sm font-bold text-slate-700 font-mono tracking-tight leading-none text-left">載入中...</span>
             </div>
         </div>
@@ -60,14 +62,12 @@
         <!-- 區塊 A：操作頁面 -->
         <div id="section-action" class="space-y-4 animate-in fade-in duration-300">
             <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 space-y-4 text-left">
-                <!-- 模式切換 -->
                 <div class="flex gap-2 p-1 bg-slate-50 rounded-xl text-center">
                     <button id="mode-in" onclick="window.setMode('IN')" class="flex-1 py-2 rounded-lg bg-blue-600 text-white font-bold text-xs shadow-md">入庫</button>
                     <button id="mode-out" onclick="window.setMode('OUT')" class="flex-1 py-2 rounded-lg text-slate-400 font-bold text-xs">出庫</button>
                     <button id="mode-count" onclick="window.setMode('COUNT')" class="flex-1 py-2 rounded-lg text-slate-400 font-bold text-xs">盤點</button>
                 </div>
                 
-                <!-- 搜尋與選擇料號 -->
                 <div class="space-y-1 relative">
                     <label class="text-[10px] font-bold text-slate-400 uppercase ml-1">尋找欲操作的料號</label>
                     <div class="flex gap-2">
@@ -77,7 +77,6 @@
                     <div id="action-search-results" class="absolute left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 mt-1 hidden max-h-64 overflow-y-auto hide-scroll"></div>
                 </div>
 
-                <!-- 已選定目標顯示區 -->
                 <div id="action-target-card" class="hidden bg-blue-50 border border-blue-100 rounded-xl p-4 mt-2">
                     <div class="flex justify-between items-start">
                         <div>
@@ -313,11 +312,19 @@
         <div class="p-10 bg-black/80 text-center"><p class="text-white/40 text-[10px] font-bold mb-4 uppercase text-center">長形條碼請置於框內</p><button onclick="window.stopScanner()" class="w-full bg-red-600 text-white py-4 rounded-2xl font-black">關閉相機</button></div>
     </div>
 
-    <div id="toast" class="fixed bottom-10 left-1/2 -translate-x-1/2 text-white px-6 py-3 rounded-full text-[13px] font-black opacity-0 transition-all z-[9000] shadow-2xl flex items-center justify-center min-w-[300px] w-[90vw] max-w-sm text-center truncate pointer-events-none"></div>
+    <div id="toast" class="toast"></div>
 
     <script>
-        // --- 核心更新：完全移除 Firebase，改用內部 API ---
-        window.operatorId = localStorage.getItem('ims_op_v13_4'); 
+        // --- 核心：Supabase 初始化 ---
+        const { createClient } = supabase;
+        
+        // ⚠️ 請在這裡填入您在 Supabase 申請的專屬 URL 與 Key
+        const supabaseUrl = 'https://qqoxnibscegbtzkhnczm.supabase.co';
+        const supabaseKey = 'sb_publishable_UUm9FEJx9x9lWbM5DTc_aw_7E8oZEwb';
+        
+        window.supabaseClient = createClient(supabaseUrl, supabaseKey);
+
+        window.operatorId = localStorage.getItem('ims_op_v5_0'); 
         window.currentMode = 'IN';
         window.adminModeActive = false;
         window.categories = [];
@@ -338,6 +345,15 @@
         window.importUpdateCount = 0;
         window.currentRowContext = null;
 
+        // 產生獨立 ID 的小工具
+        const generateUUID = () => {
+            if(crypto && crypto.randomUUID) return crypto.randomUUID();
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        };
+
         document.addEventListener('click', (e) => { 
             if (e.target.id !== 'action-search') document.getElementById('action-search-results')?.classList.add('hidden'); 
         });
@@ -351,9 +367,16 @@
         window.init = async () => {
             if (!window.operatorId) document.getElementById('setup-overlay').classList.remove('hidden');
             else { document.getElementById('display-operator').innerText = `👤 工號: ${window.operatorId}`; }
-            // 直接載入資料庫
+            
             if (window.operatorId) {
                 await window.loadCloudData();
+                // 設定即時同步 (Realtime)
+                window.supabaseClient
+                    .channel('custom-all-channel')
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, (payload) => {
+                        window.loadCloudData(); // 資料庫一有變動就重新拉取最新資料
+                    })
+                    .subscribe();
             }
         };
 
@@ -361,9 +384,9 @@
             const id = document.getElementById('operator-name-input').value.trim(); 
             if (!id) return window.showToast("請輸入工號", false); 
             if (id !== 'Admin' && !/^\d{8}$/.test(id)) return window.showToast("登入失敗：工號必須為 8 碼數字", false);
-            localStorage.setItem('ims_op_v13_4', id); location.reload(); 
+            localStorage.setItem('ims_op_v5_0', id); location.reload(); 
         };
-        window.logout = () => { if(confirm("登出？")) { localStorage.removeItem('ims_op_v13_4'); location.reload(); } };
+        window.logout = () => { if(confirm("登出？")) { localStorage.removeItem('ims_op_v5_0'); location.reload(); } };
 
         window.checkAdminStatus = () => { 
             if (window.adminList.includes(window.operatorId)) { 
@@ -374,17 +397,30 @@
             }
         };
 
-        // --- 全新 API 呼叫 ---
+        // --- 取代 Firebase 讀取：改用 Supabase 抓取資料 ---
         window.loadCloudData = async () => {
             try {
-                const res = await fetch('/api/data');
-                const d = await res.json();
+                const { data, error } = await window.supabaseClient.from('documents').select('*');
+                if (error) throw error;
                 
+                let d = { categories: [], groups: [], admins: [], stock: [], history: [] };
+                data.forEach(r => {
+                    if (r.collection === 'settings') {
+                        if (r.id === 'categories') d.categories = r.data.list || [];
+                        if (r.id === 'groups') d.groups = r.data.list || [];
+                        if (r.id === 'admins') d.admins = r.data.list || [];
+                    } else if (r.collection === 'stock') {
+                        d.stock.push(r.data);
+                    } else if (r.collection === 'history') {
+                        d.history.push({ id: r.id, ...r.data });
+                    }
+                });
+
                 window.categories = d.categories.length > 0 ? d.categories : ['培林', '氣壓缸'];
                 window.machineGroups = d.groups.length > 0 ? d.groups : ['CSCR', 'CST', 'CV'];
                 window.adminList = d.admins.length > 0 ? d.admins : ['Admin'];
                 window.cachedStock = d.stock || [];
-                window.cachedHistory = d.history || [];
+                window.cachedHistory = d.history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
                 window.checkAdminStatus(); 
                 window.renderOptions(); 
@@ -452,40 +488,28 @@
             window.closePurposeModal();
             const commentArea = document.getElementById('transaction-comment');
             commentArea.value = ""; 
-
-            if (type === 'PARTS') {
-                window.openPartsEnvSelection();
-            } else if (type === 'COUNT') {
-                commentArea.value = "盤點庫存";
-                window.openCommentModal();
-            } else {
-                commentArea.value = ""; 
-                window.openCommentModal();
-            }
+            if (type === 'PARTS') window.openPartsEnvSelection();
+            else if (type === 'COUNT') { commentArea.value = "盤點庫存"; window.openCommentModal(); } 
+            else { commentArea.value = ""; window.openCommentModal(); }
         };
 
         window.openPartsEnvSelection = () => {
             const item = window.cachedStock.find(i => i.sku === window.actionSelectedSku);
             if (!item) return;
-            
             const gL = (item.group || "").split(",").map(s => s.trim()).filter(Boolean);
             const uL = (item.unit || "").split(",").map(s => s.trim()).filter(Boolean);
             const usL = (item.usage || "").split(",").map(s => s.trim());
             const count = Math.max(gL.length, uL.length, usL.length);
-
             const list = document.getElementById('parts-env-list');
             list.innerHTML = "";
             for (let i = 0; i < count; i++) {
-                const g = gL[i] || gL[0] || "";
-                const u = uL[i] || uL[0] || "";
-                const us = usL[i] || usL[0] || "";
+                const g = gL[i] || gL[0] || ""; const u = uL[i] || uL[0] || ""; const us = usL[i] || usL[0] || "";
                 const btn = document.createElement('button');
                 btn.className = "w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-left text-xs font-bold active:bg-blue-100 active:border-blue-300 transition-all mb-1";
                 btn.innerHTML = `<span class="text-blue-600 font-mono">${g}_${u}</span><br><span class="text-slate-400 font-normal">位置: ${us || '未註明'}</span>`;
                 btn.onclick = () => window.onEnvSelectedForParts(g, u, us);
                 list.appendChild(btn);
             }
-            
             document.getElementById('machine-no-section').classList.add('hidden');
             document.getElementById('parts-selection-modal').classList.remove('hidden');
         };
@@ -505,11 +529,8 @@
         window.confirmPartsRemark = () => {
             const mNo = document.getElementById('machine-no-input').value.trim();
             if (!mNo) return window.showToast("請輸入機台編號", false);
-            
             const { g, u, us } = window.selectedPartsEnv;
-            const generatedRemark = `${g}${mNo}_${u}-${us}`;
-            
-            document.getElementById('transaction-comment').value = generatedRemark;
+            document.getElementById('transaction-comment').value = `${g}${mNo}_${u}-${us}`;
             document.getElementById('parts-selection-modal').classList.add('hidden');
             document.getElementById('machine-no-input').value = ""; 
             window.openCommentModal();
@@ -534,21 +555,13 @@
                 let diff = window.currentMode === 'COUNT' ? newQty - oldQty : null;
                 const opName = window.operatorId === 'Admin' ? '*****' : window.operatorId;
 
-                // 呼叫 API 更新庫存
+                // 呼叫 Supabase 更新庫存
                 const updatedItem = { ...item, qty: newQty, lastOp: opName, time: Date.now() };
-                await fetch(`/api/stock/${sku}`, { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify(updatedItem) 
-                });
+                await window.supabaseClient.from('documents').upsert({ collection: 'stock', id: sku, data: updatedItem });
 
-                // 呼叫 API 新增紀錄
+                // 呼叫 Supabase 新增歷史紀錄
                 const historyData = { sku, type: window.currentMode, change: qty, after: newQty, diff, op: opName, model: window.actionSelectedModel, timestamp: Date.now(), comment };
-                await fetch(`/api/history`, { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify(historyData) 
-                });
+                await window.supabaseClient.from('documents').insert({ collection: 'history', id: generateUUID(), data: historyData });
 
                 await window.loadCloudData();
 
@@ -784,7 +797,7 @@
                         gL.push(group); uL.push(unit); usL.push(usage); eqL.push(envQty);
                         const payload = { ...existing, group: gL.join(","), unit: uL.join(","), usage: usL.join(","), envQty: eqL.join(","), lastOp: window.operatorId };
                         try { 
-                            await fetch(`/api/stock/${sku}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+                            await window.supabaseClient.from('documents').upsert({ collection: 'stock', id: sku, data: payload });
                             await window.loadCloudData();
                             window.showToast("已新增共用環境", true); window.closeItemForm(); 
                         } catch(e) {}
@@ -792,7 +805,7 @@
                 }
                 const newPayload = { sku, group, unit, category: cat, usage, model, qty, envQty, leadTime, lastOp: window.operatorId, time: Date.now() };
                 try { 
-                    await fetch(`/api/stock/${sku}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(newPayload) });
+                    await window.supabaseClient.from('documents').upsert({ collection: 'stock', id: sku, data: newPayload });
                     await window.loadCloudData();
                     window.showToast("新增成功", true); window.closeItemForm(); 
                 } catch(e) {}
@@ -804,7 +817,7 @@
                 
                 const editPayload = { ...item, group: gL.join(","), unit: uL.join(","), usage: usL.join(","), envQty: eqL.join(","), category: cat, model: model, leadTime, lastOp: window.operatorId };
                 try { 
-                    await fetch(`/api/stock/${window.formEditSku}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(editPayload) });
+                    await window.supabaseClient.from('documents').upsert({ collection: 'stock', id: window.formEditSku, data: editPayload });
                     await window.loadCloudData();
                     window.showToast("修改成功", true); window.closeItemForm(); 
                 } catch(e) {}
@@ -887,7 +900,7 @@
             else { 
                 if (confirm(`徹底刪除料號 ${sku}？`)) { 
                     try { 
-                        await fetch(`/api/stock/${sku}`, { method: 'DELETE' });
+                        await window.supabaseClient.from('documents').delete().match({ collection: 'stock', id: sku });
                         await window.loadCloudData();
                         window.showToast("已徹底刪除", true); 
                     } catch (e) { window.showToast("刪除失敗", false); } 
@@ -909,7 +922,7 @@
 
             const payload = { ...item, group: gL.join(", "), unit: uL.join(", "), usage: usL.join(", "), envQty: eqL.join(", "), lastOp: `${window.operatorId}(移除環境)` };
             try { 
-                await fetch(`/api/stock/${sku}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+                await window.supabaseClient.from('documents').upsert({ collection: 'stock', id: sku, data: payload });
                 await window.loadCloudData();
                 window.showToast("已移除環境", true); 
                 window.closeContextPicker(); 
@@ -919,7 +932,7 @@
         window.executeFullDeleteFromPicker = async () => { 
             if(confirm("警告：徹底刪除整個料號及所有環境設定！確定刪除？")) { 
                 try { 
-                    await fetch(`/api/stock/${window.activePickerSku}`, { method: 'DELETE' });
+                    await window.supabaseClient.from('documents').delete().match({ collection: 'stock', id: window.activePickerSku });
                     await window.loadCloudData();
                     window.showToast("已徹底刪除", true); 
                     window.closeContextPicker(); 
@@ -940,8 +953,8 @@
                 const opName = window.operatorId === 'Admin' ? '*****' : window.operatorId;
 
                 const payload = { ...item, qty: rb, lastOp: `${opName}(Rb)` };
-                await fetch(`/api/stock/${data.sku}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-                await fetch(`/api/history/${id}`, { method: 'DELETE' });
+                await window.supabaseClient.from('documents').upsert({ collection: 'stock', id: data.sku, data: payload });
+                await window.supabaseClient.from('documents').delete().match({ collection: 'history', id: id });
                 await window.loadCloudData();
 
                 window.showToast("紀錄已回退", true);
@@ -951,12 +964,12 @@
         window.toggleAdminMode = () => { window.adminModeActive = !window.adminModeActive; document.getElementById('top-nav').classList.toggle('admin-glow', window.adminModeActive); document.getElementById('admin-badge').classList.toggle('hidden', !window.adminModeActive); window.applyFilters(); window.applyHistoryFilters(); window.renderOptions(); };
         window.toggleSettingsManager = (s) => { document.getElementById('settings-modal').classList.toggle('hidden', !s); if(s) { document.getElementById('admin-cat-controls').classList.toggle('hidden', !window.adminModeActive); document.getElementById('admin-group-controls').classList.toggle('hidden', !window.adminModeActive); document.getElementById('admin-section-container').classList.toggle('hidden', !window.adminModeActive); } };
         
-        window.addNewCategory = async () => { const i = document.getElementById('new-category-name'); const v = i.value.trim(); if(!v) return; try { await fetch('/api/settings/categories', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({list: [...new Set([...window.categories, v])]}) }); await window.loadCloudData(); window.showToast("已新增", true); i.value = ""; } catch(e) {} };
-        window.addNewGroup = async () => { const i = document.getElementById('new-group-name'); const v = i.value.trim(); if(!v) return; try { await fetch('/api/settings/groups', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({list: [...new Set([...window.machineGroups, v])]}) }); await window.loadCloudData(); window.showToast("已新增", true); i.value = ""; } catch(e) {} };
-        window.removeCategory = async (n) => { if(confirm(`移除類別 ${n}？`)) { await fetch('/api/settings/categories', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({list: window.categories.filter(x => x !== n)}) }); await window.loadCloudData(); } };
-        window.removeGroup = async (n) => { if(confirm(`移除機群 ${n}？`)) { await fetch('/api/settings/groups', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({list: window.machineGroups.filter(x => x !== n)}) }); await window.loadCloudData(); } };
-        window.addAdmin = async () => { const i = document.getElementById('new-admin-id'); const v = i.value.trim(); if(!v || !/^\d{8}$/.test(v)) return window.showToast("工號必須為 8 碼", false); try { await fetch('/api/settings/admins', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({list: [...new Set([...window.adminList, v])]}) }); await window.loadCloudData(); window.showToast("已新增管理員", true); i.value = ""; } catch(e) {} };
-        window.removeAdmin = async (n) => { if(n !== 'Admin' && confirm(`移除管理員 ${n}？`)) { await fetch('/api/settings/admins', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({list: window.adminList.filter(x => x !== n)}) }); await window.loadCloudData(); } };
+        window.addNewCategory = async () => { const i = document.getElementById('new-category-name'); const v = i.value.trim(); if(!v) return; try { await window.supabaseClient.from('documents').upsert({ collection: 'settings', id: 'categories', data: { list: [...new Set([...window.categories, v])] } }); await window.loadCloudData(); window.showToast("已新增", true); i.value = ""; } catch(e) {} };
+        window.addNewGroup = async () => { const i = document.getElementById('new-group-name'); const v = i.value.trim(); if(!v) return; try { await window.supabaseClient.from('documents').upsert({ collection: 'settings', id: 'groups', data: { list: [...new Set([...window.machineGroups, v])] } }); await window.loadCloudData(); window.showToast("已新增", true); i.value = ""; } catch(e) {} };
+        window.removeCategory = async (n) => { if(confirm(`移除類別 ${n}？`)) { await window.supabaseClient.from('documents').upsert({ collection: 'settings', id: 'categories', data: { list: window.categories.filter(x => x !== n) } }); await window.loadCloudData(); } };
+        window.removeGroup = async (n) => { if(confirm(`移除機群 ${n}？`)) { await window.supabaseClient.from('documents').upsert({ collection: 'settings', id: 'groups', data: { list: window.machineGroups.filter(x => x !== n) } }); await window.loadCloudData(); } };
+        window.addAdmin = async () => { const i = document.getElementById('new-admin-id'); const v = i.value.trim(); if(!v || !/^\d{8}$/.test(v)) return window.showToast("工號必須為 8 碼", false); try { await window.supabaseClient.from('documents').upsert({ collection: 'settings', id: 'admins', data: { list: [...new Set([...window.adminList, v])] } }); await window.loadCloudData(); window.showToast("已新增管理員", true); i.value = ""; } catch(e) {} };
+        window.removeAdmin = async (n) => { if(n !== 'Admin' && confirm(`移除管理員 ${n}？`)) { await window.supabaseClient.from('documents').upsert({ collection: 'settings', id: 'admins', data: { list: window.adminList.filter(x => x !== n) } }); await window.loadCloudData(); } };
 
         window.processPastedText = async () => {
             const input = document.getElementById('import-text-area'); 
@@ -1020,11 +1033,12 @@
             if (window.pendingImports.length === 0) {
                 if (window.importUpdateCount > 0) {
                     try {
-                        await fetch('/api/batch_stock', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify(Array.from(window.importStockMap.values()))
-                        });
+                        const batchData = Array.from(window.importStockMap.values()).map(item => ({
+                            collection: 'stock',
+                            id: item.sku,
+                            data: item
+                        }));
+                        await window.supabaseClient.from('documents').upsert(batchData);
                         await window.loadCloudData();
                         window.showToast(`✅ 成功匯入/更新 ${window.importUpdateCount} 筆`, true);
                     } catch(e) { window.showToast("❌ 儲存至雲端失敗", false); }
